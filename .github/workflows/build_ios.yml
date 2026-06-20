@@ -1,0 +1,51 @@
+name: Build iOS Plugins
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build-ios:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Configure Uma-Proxy Plugin
+        run: |
+          cmake -B plugins/Uma-Proxy/build -S plugins/Uma-Proxy \
+            -DCMAKE_SYSTEM_NAME=iOS \
+            -DCMAKE_SYSTEM_PROCESSOR=arm64 \
+            -DCMAKE_OSX_SYSROOT=iphoneos \
+            -DCMAKE_OSX_ARCHITECTURES=arm64 \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DDOBBY_GENERATE_SHARED=OFF
+
+      - name: Build Uma-Proxy Plugin
+        run: |
+          cmake --build plugins/Uma-Proxy/build --config Release
+
+      - name: Configure Packet-Capture Plugin
+        run: |
+          cmake -B plugins/Packet-Capture/build -S plugins/Packet-Capture \
+            -DCMAKE_SYSTEM_NAME=iOS \
+            -DCMAKE_SYSTEM_PROCESSOR=arm64 \
+            -DCMAKE_OSX_SYSROOT=iphoneos \
+            -DCMAKE_OSX_ARCHITECTURES=arm64 \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DDOBBY_GENERATE_SHARED=OFF
+
+      - name: Build Packet-Capture Plugin
+        run: |
+          cmake --build plugins/Packet-Capture/build --config Release
+
+      - name: Locate and Collect Binaries
+        run: |
+          mkdir -p build/ios
+          find plugins/Uma-Proxy/build -name "libuma_proxy.dylib" -exec cp {} build/ios/ \;
+          find plugins/Packet-Capture/build -name "libpacket_capture.dylib" -exec cp {} build/ios/ \;
+          ls -R build/ios
+
+      - name: Upload iOS Binaries
+        uses: actions/upload-artifact@v7
+        with:
+          name: ios-plugins
+          path: build/ios/
