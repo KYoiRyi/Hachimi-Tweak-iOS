@@ -153,14 +153,14 @@ static std::string GetPluginOutputDir(const char* plugin_dir) {
 #elif defined(__APPLE__)
     std::string docs = GetiOSDocumentsDirectory();
     if (!docs.empty()) {
-        return docs + "/hachimi/" + plugin_dir;
+        return docs;
     }
     char* home = getenv("HOME");
     std::string home_str = home ? home : "";
     if (home_str.empty()) {
         home_str = "/var/mobile";
     }
-    return home_str + "/Documents/hachimi/" + plugin_dir;
+    return home_str + "/Documents";
 #else
     return "/sdcard/Android/media/" + GetPackageName() + "/hachimi/" + plugin_dir;
 #endif
