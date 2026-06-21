@@ -3,6 +3,7 @@
 #endif
 #ifdef __APPLE__
 #import <Foundation/Foundation.h>
+#include <CoreFoundation/CoreFoundation.h>
 #include "fishhook.h"
 #include <map>
 #include <mutex>
@@ -26,6 +27,66 @@ std::string GetiOSDocumentsDirectory() {
     }
     return "";
 }
+
+std::vector<std::string> GetiOSLogPaths(const std::string& filename) {
+    std::vector<std::string> paths;
+    
+    // 1. Documents Directory
+    std::string docs = GetiOSDocumentsDirectory();
+    if (!docs.empty()) {
+        paths.push_back(docs + "/" + filename);
+    }
+    
+    // 2. Library/Caches Directory
+    NSArray *cachePaths = NSSearchPathForDirectoriesInDomains(NSCachesDirectory, NSUserDomainMask, YES);
+    NSString *cacheDir = [cachePaths firstObject];
+    if (cacheDir) {
+        paths.push_back(std::string([cacheDir UTF8String]) + "/" + filename);
+    }
+    
+    // 3. tmp Directory
+    NSString *tmpDir = NSTemporaryDirectory();
+    if (tmpDir) {
+        paths.push_back(std::string([tmpDir UTF8String]) + "/" + filename);
+    }
+    
+    // 4. Sandbox Home directory environment fallbacks
+    char* home = getenv("HOME");
+    std::string home_str = home ? home : "";
+    if (!home_str.empty()) {
+        paths.push_back(home_str + "/Documents/" + filename);
+        paths.push_back(home_str + "/Library/Caches/" + filename);
+        paths.push_back(home_str + "/tmp/" + filename);
+    }
+    
+    // 5. Default iOS standard paths
+    paths.push_back("/var/mobile/Documents/" + filename);
+    paths.push_back("/var/mobile/Containers/Data/Application/Documents/" + filename);
+    
+    return paths;
+}
+
+#ifdef __APPLE__
+static void ShowStartupAlert() {
+    std::thread([]() {
+        std::this_thread::sleep_for(std::chrono::seconds(2));
+        CFUserNotificationDisplayAlert(
+            0.0, // timeout
+            kCFUserNotificationPlainAlertLevel, // flags
+            NULL, // icon URL
+            NULL, // sound URL
+            NULL, // localization URL
+            CFSTR("Hachimi Uma-Proxy"), // alertHeader
+            CFSTR("Tweak startup succeeded!\nLogs are written to sandboxed Documents, Library/Caches, and tmp directories."), // alertMessage
+            CFSTR("Awesome"), // defaultButtonTitle
+            NULL, // alternateButtonTitle
+            NULL, // otherButtonTitle
+            NULL  // responseFlags
+        );
+    }).detach();
+}
+#endif
+
 
 static void* local_resolve_symbol(const char* symbol_name) {
     void* sym = dlsym(RTLD_DEFAULT, symbol_name);
@@ -105,7 +166,26 @@ static void Log(const std::string& msg) {
     NSLog(@"[Hachimi-UmaProxy] %s", msg.c_str());
     fprintf(stderr, "[Hachimi-UmaProxy] %s\n", msg.c_str());
     fflush(stderr);
-#endif
+
+    std::vector<std::string> paths = GetiOSLogPaths("proxy.log");
+    bool at_least_one_success = false;
+    std::string last_error = "";
+    
+    for (const auto& path : paths) {
+        std::ofstream ofs(path, std::ios::out | std::ios::app);
+        if (ofs.is_open()) {
+            ofs << msg << "\n";
+            ofs.close();
+            at_least_one_success = true;
+        } else {
+            last_error = strerror(errno);
+        }
+    }
+    
+    if (!at_least_one_success) {
+        NSLog(@"[Hachimi-UmaProxy] ERROR: Failed to write file log to any location. Last error: %s", last_error.c_str());
+    }
+#else
     if (!g_outputDir.empty()) {
         std::string logPath = g_outputDir + "/proxy.log";
         std::ofstream ofs(logPath, std::ios::out | std::ios::app);
@@ -114,6 +194,7 @@ static void Log(const std::string& msg) {
             ofs.close();
         }
     }
+#endif
 }
 
 static std::string GetPackageName() {
@@ -201,27 +282,43 @@ static void* ResolveNativeSymbol(const char* module_name, const char* symbol_nam
 }
 
 static void LoadConfig() {
-    std::string configPath = g_outputDir + "/config.json";
-    std::ifstream ifs(configPath);
-    if (ifs.is_open()) {
-        try {
-            json j;
-            ifs >> j;
-            g_proxy_enabled = j.value("proxy_enabled", false);
-            g_proxy_url = j.value("proxy_url", "http://127.0.0.1:5090");
-            Log("Config loaded. Proxy Enabled: " + std::to_string(g_proxy_enabled) + ", Target: " + g_proxy_url);
-        } catch (const std::exception& e) {
-            Log("Failed to parse config: " + std::string(e.what()));
+    std::vector<std::string> configPaths;
+#ifdef __APPLE__
+    configPaths = GetiOSLogPaths("config.json");
+#else
+    configPaths.push_back(g_outputDir + "/config.json");
+#endif
+
+    bool config_loaded = false;
+    for (const auto& configPath : configPaths) {
+        std::ifstream ifs(configPath);
+        if (ifs.is_open()) {
+            try {
+                json j;
+                ifs >> j;
+                g_proxy_enabled = j.value("proxy_enabled", false);
+                g_proxy_url = j.value("proxy_url", "http://127.0.0.1:5090");
+                Log("Config loaded from " + configPath + ". Proxy Enabled: " + std::to_string(g_proxy_enabled) + ", Target: " + g_proxy_url);
+                config_loaded = true;
+                break;
+            } catch (const std::exception& e) {
+                Log("Failed to parse config at " + configPath + ": " + std::string(e.what()));
+            }
         }
-    } else {
+    }
+
+    if (!config_loaded) {
         json j;
         j["proxy_enabled"] = false;
         j["proxy_url"] = "http://127.0.0.1:5090";
-        std::ofstream ofs(configPath);
-        if (ofs.is_open()) {
-            ofs << j.dump(4);
-            ofs.close();
-            Log("Default config created.");
+        
+        for (const auto& configPath : configPaths) {
+            std::ofstream ofs(configPath);
+            if (ofs.is_open()) {
+                ofs << j.dump(4);
+                ofs.close();
+                Log("Default config created at " + configPath);
+            }
         }
     }
 }
@@ -568,6 +665,7 @@ __attribute__((constructor)) static void ios_tweak_init() {
     Log("=========================================");
     Log("Hachimi Uma-Proxy Tweak Dylib Constructor Loaded!");
     Log("=========================================");
+    ShowStartupAlert();
 
     void* init_addr = dlsym(RTLD_DEFAULT, "il2cpp_init");
     if (init_addr) {

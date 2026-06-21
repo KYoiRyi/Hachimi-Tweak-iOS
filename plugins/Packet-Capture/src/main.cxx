@@ -3,6 +3,7 @@
 #endif
 #ifdef __APPLE__
 #import <Foundation/Foundation.h>
+#include <CoreFoundation/CoreFoundation.h>
 #include "fishhook.h"
 #include <map>
 #include <mutex>
@@ -26,6 +27,66 @@ std::string GetiOSDocumentsDirectory() {
     }
     return "";
 }
+
+std::vector<std::string> GetiOSLogPaths(const std::string& filename) {
+    std::vector<std::string> paths;
+    
+    // 1. Documents Directory
+    std::string docs = GetiOSDocumentsDirectory();
+    if (!docs.empty()) {
+        paths.push_back(docs + "/" + filename);
+    }
+    
+    // 2. Library/Caches Directory
+    NSArray *cachePaths = NSSearchPathForDirectoriesInDomains(NSCachesDirectory, NSUserDomainMask, YES);
+    NSString *cacheDir = [cachePaths firstObject];
+    if (cacheDir) {
+        paths.push_back(std::string([cacheDir UTF8String]) + "/" + filename);
+    }
+    
+    // 3. tmp Directory
+    NSString *tmpDir = NSTemporaryDirectory();
+    if (tmpDir) {
+        paths.push_back(std::string([tmpDir UTF8String]) + "/" + filename);
+    }
+    
+    // 4. Sandbox Home directory environment fallbacks
+    char* home = getenv("HOME");
+    std::string home_str = home ? home : "";
+    if (!home_str.empty()) {
+        paths.push_back(home_str + "/Documents/" + filename);
+        paths.push_back(home_str + "/Library/Caches/" + filename);
+        paths.push_back(home_str + "/tmp/" + filename);
+    }
+    
+    // 5. Default iOS standard paths
+    paths.push_back("/var/mobile/Documents/" + filename);
+    paths.push_back("/var/mobile/Containers/Data/Application/Documents/" + filename);
+    
+    return paths;
+}
+
+#ifdef __APPLE__
+static void ShowStartupAlert() {
+    std::thread([]() {
+        std::this_thread::sleep_for(std::chrono::seconds(2));
+        CFUserNotificationDisplayAlert(
+            0.0, // timeout
+            kCFUserNotificationPlainAlertLevel, // flags
+            NULL, // icon URL
+            NULL, // sound URL
+            NULL, // localization URL
+            CFSTR("Hachimi Packet-Capture"), // alertHeader
+            CFSTR("Tweak startup succeeded!\nLogs are written to sandboxed Documents, Library/Caches, and tmp directories."), // alertMessage
+            CFSTR("Awesome"), // defaultButtonTitle
+            NULL, // alternateButtonTitle
+            NULL, // otherButtonTitle
+            NULL  // responseFlags
+        );
+    }).detach();
+}
+#endif
+
 
 static void* local_resolve_symbol(const char* symbol_name) {
     void* sym = dlsym(RTLD_DEFAULT, symbol_name);
@@ -112,7 +173,26 @@ static void Log(const std::string& msg) {
     NSLog(@"[Hachimi-PacketCapture] %s", msg.c_str());
     fprintf(stderr, "[Hachimi-PacketCapture] %s\n", msg.c_str());
     fflush(stderr);
-#endif
+
+    std::vector<std::string> paths = GetiOSLogPaths("capture.log");
+    bool at_least_one_success = false;
+    std::string last_error = "";
+    
+    for (const auto& path : paths) {
+        std::ofstream ofs(path, std::ios::out | std::ios::app);
+        if (ofs.is_open()) {
+            ofs << msg << "\n";
+            ofs.close();
+            at_least_one_success = true;
+        } else {
+            last_error = strerror(errno);
+        }
+    }
+    
+    if (!at_least_one_success) {
+        NSLog(@"[Hachimi-PacketCapture] ERROR: Failed to write file log to any location. Last error: %s", last_error.c_str());
+    }
+#else
     if (!g_outputDir.empty()) {
         std::string logPath = g_outputDir + "/capture.log";
         std::ofstream ofs(logPath, std::ios::out | std::ios::app);
@@ -121,6 +201,7 @@ static void Log(const std::string& msg) {
             ofs.close();
         }
     }
+#endif
 }
 
 static std::string GetPackageName() {
@@ -348,28 +429,44 @@ static void* h_TempestRegisterRequest(void* this_ptr, int32_t* request_idx, void
 }
 
 static void LoadConfig() {
-    std::string configPath = g_outputDir + "/capture_config.json";
-    std::ifstream ifs(configPath);
-    if (ifs.is_open()) {
-        try {
-            json j;
-            ifs >> j;
-            g_capture_enabled = j.value("capture_enabled", true);
-            g_download_capture_enabled = j.value("download_capture_enabled", true);
-            Log("Config loaded. Normal Capture: " + std::to_string(g_capture_enabled) + 
-                ", Download Capture: " + std::to_string(g_download_capture_enabled));
-        } catch (const std::exception& e) {
-            Log("Failed to parse config: " + std::string(e.what()));
+    std::vector<std::string> configPaths;
+#ifdef __APPLE__
+    configPaths = GetiOSLogPaths("capture_config.json");
+#else
+    configPaths.push_back(g_outputDir + "/capture_config.json");
+#endif
+
+    bool config_loaded = false;
+    for (const auto& configPath : configPaths) {
+        std::ifstream ifs(configPath);
+        if (ifs.is_open()) {
+            try {
+                json j;
+                ifs >> j;
+                g_capture_enabled = j.value("capture_enabled", true);
+                g_download_capture_enabled = j.value("download_capture_enabled", true);
+                Log("Config loaded from " + configPath + ". Normal Capture: " + std::to_string(g_capture_enabled) + 
+                    ", Download Capture: " + std::to_string(g_download_capture_enabled));
+                config_loaded = true;
+                break;
+            } catch (const std::exception& e) {
+                Log("Failed to parse config at " + configPath + ": " + std::string(e.what()));
+            }
         }
-    } else {
+    }
+
+    if (!config_loaded) {
         json j;
         j["capture_enabled"] = true;
         j["download_capture_enabled"] = true;
-        std::ofstream ofs(configPath);
-        if (ofs.is_open()) {
-            ofs << j.dump(4);
-            ofs.close();
-            Log("Default config created.");
+        
+        for (const auto& configPath : configPaths) {
+            std::ofstream ofs(configPath);
+            if (ofs.is_open()) {
+                ofs << j.dump(4);
+                ofs.close();
+                Log("Default config created at " + configPath);
+            }
         }
     }
 }
@@ -632,6 +729,7 @@ __attribute__((constructor)) static void ios_tweak_init() {
     Log("=========================================");
     Log("Hachimi Packet-Capture Tweak Dylib Constructor Loaded!");
     Log("=========================================");
+    ShowStartupAlert();
 
     void* init_addr = dlsym(RTLD_DEFAULT, "il2cpp_init");
     if (init_addr) {
