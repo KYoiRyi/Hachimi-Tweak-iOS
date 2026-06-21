@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.11)
-project(PacketCapturePlugin LANGUAGES CXX)
+project(PacketCapturePlugin LANGUAGES C CXX)
 
 add_library(packet_capture SHARED
     src/main.cxx
@@ -13,7 +13,7 @@ endif()
 
 if(APPLE)
     target_sources(packet_capture PRIVATE src/fishhook.c)
-    set_source_files_properties(src/main.cxx PROPERTIES COMPILE_FLAGS "-x objective-c++")
+    set_source_files_properties(src/main.cxx PROPERTIES LANGUAGE OBJCXX)
     target_link_libraries(packet_capture PRIVATE "-framework Foundation")
 endif()
 
