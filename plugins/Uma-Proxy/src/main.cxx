@@ -28,6 +28,36 @@ std::string GetiOSDocumentsDirectory() {
     return "";
 }
 
+
+
+
+static void* local_resolve_symbol(const char* symbol_name) {
+    void* sym = dlsym(RTLD_DEFAULT, symbol_name);
+    if (sym) {
+        std::lock_guard<std::mutex> lock(g_symbol_name_map_mutex);
+        g_symbol_name_map[sym] = symbol_name;
+    }
+    return sym;
+}
+#endif
+#ifdef _WIN32
+#include <direct.h>
+#include <windows.h>
+#else
+#include <sys/stat.h>
+#endif
+#include <string>
+#include <vector>
+#include <fstream>
+#include <iostream>
+#include <stdio.h>
+#include <thread>
+#include <chrono>
+#include "json.hpp"
+
+using json = nlohmann::json;
+
+#ifdef __APPLE__
 std::vector<std::string> GetiOSLogPaths(const std::string& filename) {
     std::vector<std::string> paths;
     
@@ -66,53 +96,34 @@ std::vector<std::string> GetiOSLogPaths(const std::string& filename) {
     return paths;
 }
 
-#ifdef __APPLE__
+typedef SInt32 (*CFUserNotificationDisplayAlert_t)(
+    CFTimeInterval timeout, CFOptionFlags flags, CFURLRef iconURL, CFURLRef soundURL,
+    CFURLRef localizationURL, CFStringRef alertHeader, CFStringRef alertMessage,
+    CFStringRef defaultButtonTitle, CFStringRef alternateButtonTitle, CFStringRef otherButtonTitle,
+    CFOptionFlags *responseFlags);
+
 static void ShowStartupAlert() {
     std::thread([]() {
         std::this_thread::sleep_for(std::chrono::seconds(2));
-        CFUserNotificationDisplayAlert(
-            0.0, // timeout
-            kCFUserNotificationPlainAlertLevel, // flags
-            NULL, // icon URL
-            NULL, // sound URL
-            NULL, // localization URL
-            CFSTR("Hachimi Uma-Proxy"), // alertHeader
-            CFSTR("Tweak startup succeeded!\nLogs are written to sandboxed Documents, Library/Caches, and tmp directories."), // alertMessage
-            CFSTR("Awesome"), // defaultButtonTitle
-            NULL, // alternateButtonTitle
-            NULL, // otherButtonTitle
-            NULL  // responseFlags
-        );
+        void* addr = dlsym(RTLD_DEFAULT, "CFUserNotificationDisplayAlert");
+        if (addr) {
+            auto fn = (CFUserNotificationDisplayAlert_t)addr;
+            fn(
+                0.0,
+                3, // kCFUserNotificationPlainAlertLevel value is 3
+                NULL, NULL, NULL,
+                CFSTR("Hachimi Uma-Proxy"),
+                CFSTR("Tweak startup succeeded!\nLogs are written to sandboxed Documents, Library/Caches, and tmp directories."),
+                CFSTR("Awesome"),
+                NULL, NULL, NULL
+            );
+        } else {
+            NSLog(@"[Hachimi-UmaProxy] CFUserNotificationDisplayAlert symbol not found via dlsym.");
+        }
     }).detach();
 }
 #endif
 
-
-static void* local_resolve_symbol(const char* symbol_name) {
-    void* sym = dlsym(RTLD_DEFAULT, symbol_name);
-    if (sym) {
-        std::lock_guard<std::mutex> lock(g_symbol_name_map_mutex);
-        g_symbol_name_map[sym] = symbol_name;
-    }
-    return sym;
-}
-#endif
-#ifdef _WIN32
-#include <direct.h>
-#include <windows.h>
-#else
-#include <sys/stat.h>
-#endif
-#include <string>
-#include <vector>
-#include <fstream>
-#include <iostream>
-#include <stdio.h>
-#include <thread>
-#include <chrono>
-#include "json.hpp"
-
-using json = nlohmann::json;
 
 #ifdef _WIN32
 #define HACHIMI_EXPORT extern "C" __declspec(dllexport)
