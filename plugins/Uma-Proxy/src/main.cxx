@@ -53,6 +53,7 @@ static void* local_resolve_symbol(const char* symbol_name) {
 #include <stdio.h>
 #include <thread>
 #include <chrono>
+#include <atomic>
 #include "json.hpp"
 
 using json = nlohmann::json;
@@ -474,23 +475,27 @@ static void OnGameInitialized() {
     }
 }
 
+static std::atomic<bool> g_il2cpp_initialized{false};
+
 static void HookThread() {
     Log("HookThread started.");
     int counter = 0;
     while (true) {
-        if (g_get_assembly_image) {
-            void* image_uma = g_get_assembly_image("umamusume.dll");
-            if (!image_uma) {
-                image_uma = g_get_assembly_image("umamusume");
-            }
-            if (image_uma) {
-                Log("Found umamusume assembly image!");
-                break;
+        if (g_il2cpp_initialized.load()) {
+            if (g_get_assembly_image) {
+                void* image_uma = g_get_assembly_image("umamusume.dll");
+                if (!image_uma) {
+                    image_uma = g_get_assembly_image("umamusume");
+                }
+                if (image_uma) {
+                    Log("Found umamusume assembly image!");
+                    break;
+                }
             }
         }
         if (counter++ % 100 == 0) {
             char temp[256];
-            snprintf(temp, sizeof(temp), "HookThread still waiting for umamusume.dll... (ticks: %d)", counter);
+            snprintf(temp, sizeof(temp), "HookThread still waiting for umamusume.dll... (ticks: %d, il2cpp_initialized: %d)", counter, (int)g_il2cpp_initialized.load());
             Log(temp);
         }
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
@@ -676,6 +681,7 @@ static bool h_il2cpp_init(const char* domain_name) {
     Log("Standalone iOS Tweak Mode (JIT-less) Initialized! Directory: " + g_outputDir);
 
     bool ret = o_il2cpp_init(domain_name);
+    g_il2cpp_initialized.store(true);
 
     StartHookThreadOnce();
 
