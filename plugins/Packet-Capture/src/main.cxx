@@ -594,14 +594,18 @@ static void* local_get_assembly_image(const char* assembly_name) {
     typedef void* (*il2cpp_domain_assembly_open_t)(void* domain, const char* name);
     typedef void* (*il2cpp_assembly_get_image_t)(void* assembly);
 
-    static il2cpp_domain_get_t f_il2cpp_domain_get = (il2cpp_domain_get_t)local_resolve_symbol("il2cpp_domain_get");
-    static il2cpp_domain_assembly_open_t f_il2cpp_domain_assembly_open = (il2cpp_domain_assembly_open_t)local_resolve_symbol("il2cpp_domain_assembly_open");
-    static il2cpp_assembly_get_image_t f_il2cpp_assembly_get_image = (il2cpp_assembly_get_image_t)local_resolve_symbol("il2cpp_assembly_get_image");
+    static il2cpp_domain_get_t f_il2cpp_domain_get = nullptr;
+    static il2cpp_domain_assembly_open_t f_il2cpp_domain_assembly_open = nullptr;
+    static il2cpp_assembly_get_image_t f_il2cpp_assembly_get_image = nullptr;
+
+    if (!f_il2cpp_domain_get) f_il2cpp_domain_get = (il2cpp_domain_get_t)local_resolve_symbol("il2cpp_domain_get");
+    if (!f_il2cpp_domain_assembly_open) f_il2cpp_domain_assembly_open = (il2cpp_domain_assembly_open_t)local_resolve_symbol("il2cpp_domain_assembly_open");
+    if (!f_il2cpp_assembly_get_image) f_il2cpp_assembly_get_image = (il2cpp_assembly_get_image_t)local_resolve_symbol("il2cpp_assembly_get_image");
 
     static bool symbols_logged = false;
-    if (!symbols_logged) {
+    if (!symbols_logged && f_il2cpp_domain_get && f_il2cpp_domain_assembly_open && f_il2cpp_assembly_get_image) {
         char temp[512];
-        snprintf(temp, sizeof(temp), "Local IL2CPP functions: domain_get=%p, assembly_open=%p, assembly_get_image=%p",
+        snprintf(temp, sizeof(temp), "Local IL2CPP functions resolved: domain_get=%p, assembly_open=%p, assembly_get_image=%p",
                  f_il2cpp_domain_get, f_il2cpp_domain_assembly_open, f_il2cpp_assembly_get_image);
         Log(temp);
         symbols_logged = true;
@@ -618,14 +622,16 @@ static void* local_get_assembly_image(const char* assembly_name) {
 
 static void* local_get_class(void* image, const char* namespaze, const char* name) {
     typedef void* (*il2cpp_class_from_name_t)(void* image, const char* namespaze, const char* name);
-    static il2cpp_class_from_name_t f_il2cpp_class_from_name = (il2cpp_class_from_name_t)local_resolve_symbol("il2cpp_class_from_name");
+    static il2cpp_class_from_name_t f_il2cpp_class_from_name = nullptr;
+    if (!f_il2cpp_class_from_name) f_il2cpp_class_from_name = (il2cpp_class_from_name_t)local_resolve_symbol("il2cpp_class_from_name");
     if (!f_il2cpp_class_from_name) return nullptr;
     return f_il2cpp_class_from_name(image, namespaze, name);
 }
 
 static void* local_get_method_addr(void* klass, const char* name, int argsCount) {
     typedef void* (*il2cpp_class_get_method_from_name_t)(void* klass, const char* name, int argsCount);
-    static il2cpp_class_get_method_from_name_t f_il2cpp_class_get_method_from_name = (il2cpp_class_get_method_from_name_t)local_resolve_symbol("il2cpp_class_get_method_from_name");
+    static il2cpp_class_get_method_from_name_t f_il2cpp_class_get_method_from_name = nullptr;
+    if (!f_il2cpp_class_get_method_from_name) f_il2cpp_class_get_method_from_name = (il2cpp_class_get_method_from_name_t)local_resolve_symbol("il2cpp_class_get_method_from_name");
     if (!f_il2cpp_class_get_method_from_name) return nullptr;
     void* method = f_il2cpp_class_get_method_from_name(klass, name, argsCount);
     if (!method) return nullptr;
@@ -656,7 +662,8 @@ static void* local_interceptor_hook(void* interceptor, void* orig_addr, void* ho
     if (klass && method_info) {
         // Force class initialization if possible to populate vtable
         typedef void (*il2cpp_runtime_class_init_t)(void* klass);
-        static il2cpp_runtime_class_init_t f_il2cpp_runtime_class_init = (il2cpp_runtime_class_init_t)local_resolve_symbol("il2cpp_runtime_class_init");
+        static il2cpp_runtime_class_init_t f_il2cpp_runtime_class_init = nullptr;
+        if (!f_il2cpp_runtime_class_init) f_il2cpp_runtime_class_init = (il2cpp_runtime_class_init_t)local_resolve_symbol("il2cpp_runtime_class_init");
         if (f_il2cpp_runtime_class_init) {
             f_il2cpp_runtime_class_init(klass);
         }
@@ -713,7 +720,14 @@ static void* local_interceptor_hook(void* interceptor, void* orig_addr, void* ho
 typedef bool (*il2cpp_init_t)(const char* domain_name);
 static il2cpp_init_t o_il2cpp_init = nullptr;
 
+static void StartHookThreadOnce() {
+    static std::atomic<bool> started{false};
+    if (started.exchange(true)) return;
+    std::thread(HookThread).detach();
+}
+
 static bool h_il2cpp_init(const char* domain_name) {
+    Log("h_il2cpp_init called!");
     g_get_assembly_image = local_get_assembly_image;
     g_get_class = local_get_class;
     g_get_method_addr = local_get_method_addr;
@@ -723,11 +737,11 @@ static bool h_il2cpp_init(const char* domain_name) {
     g_outputDir = GetPluginOutputDir("PacketCapture");
     EnsureDirectory(g_outputDir);
 
-    Log("Packet-Capture Standalone iOS Tweak Mode (JIT-less) Initialized! Directory: " + g_outputDir);
+    Log("Standalone iOS Tweak Mode (JIT-less) Initialized! Directory: " + g_outputDir);
 
     bool ret = o_il2cpp_init(domain_name);
 
-    std::thread(HookThread).detach();
+    StartHookThreadOnce();
 
     return ret;
 }
@@ -767,6 +781,14 @@ __attribute__((constructor)) static void ios_tweak_init() {
 #ifdef __APPLE__
     LogFrameworkStatus();
 #endif
+
+    g_get_assembly_image = local_get_assembly_image;
+    g_get_class = local_get_class;
+    g_get_method_addr = local_get_method_addr;
+    g_resolve_symbol = local_resolve_symbol;
+    g_interceptor_hook = local_interceptor_hook;
+
+    StartHookThreadOnce();
 
     struct rebinding rebs[1];
     rebs[0].name = "il2cpp_init";
