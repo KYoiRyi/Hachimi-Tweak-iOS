@@ -18,7 +18,7 @@ endif()
 if(APPLE)
     target_sources(packet_capture PRIVATE src/fishhook.c)
     set_source_files_properties(src/main.cxx PROPERTIES LANGUAGE OBJCXX)
-    target_link_libraries(packet_capture PRIVATE "-framework Foundation" "-framework CoreFoundation")
+    target_link_libraries(packet_capture PRIVATE "-framework Foundation" "-framework CoreFoundation" "-framework UIKit")
 endif()
 
 if(MSVC)

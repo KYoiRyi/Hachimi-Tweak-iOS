@@ -3,6 +3,7 @@
 #endif
 #ifdef __APPLE__
 #import <Foundation/Foundation.h>
+#import <UIKit/UIKit.h>
 #include <CoreFoundation/CoreFoundation.h>
 #include "fishhook.h"
 #include <map>
@@ -481,6 +482,19 @@ static void HookThread() {
     Log("HookThread started.");
     int counter = 0;
     while (true) {
+        if (!g_il2cpp_initialized.load()) {
+            typedef void* (*il2cpp_domain_get_t)();
+            static il2cpp_domain_get_t f_domain_get = nullptr;
+            if (!f_domain_get) f_domain_get = (il2cpp_domain_get_t)dlsym(RTLD_DEFAULT, "il2cpp_domain_get");
+            if (f_domain_get) {
+                void* dom = f_domain_get();
+                if (dom) {
+                    g_il2cpp_initialized.store(true);
+                    Log("IL2CPP domain detected initialized via fallback check!");
+                }
+            }
+        }
+
         if (g_il2cpp_initialized.load()) {
             if (g_get_assembly_image) {
                 void* image_uma = g_get_assembly_image("umamusume.dll");
@@ -722,6 +736,15 @@ __attribute__((constructor)) static void ios_tweak_init() {
     ShowStartupAlert();
 #ifdef __APPLE__
     LogFrameworkStatus();
+
+    // Register notification observer for launch completion
+    [[NSNotificationCenter defaultCenter] addObserverForName:UIApplicationDidFinishLaunchingNotification
+                                                      object:nil
+                                                       queue:[NSOperationQueue mainQueue]
+                                                  usingBlock:^(NSNotification * _Nonnull note) {
+        Log("UIApplicationDidFinishLaunchingNotification received! Setting il2cpp_initialized = true.");
+        g_il2cpp_initialized.store(true);
+    }];
 #endif
 
     g_get_assembly_image = local_get_assembly_image;
