@@ -387,12 +387,25 @@ static void OnGameInitialized() {
 }
 
 static void HookThread() {
+    Log("HookThread started.");
+    int counter = 0;
     while (true) {
         if (g_get_assembly_image) {
             void* image_uma = g_get_assembly_image("umamusume.dll");
-            if (image_uma) break;
+            if (!image_uma) {
+                image_uma = g_get_assembly_image("umamusume");
+            }
+            if (image_uma) {
+                Log("Found umamusume assembly image!");
+                break;
+            }
         }
-        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        if (counter++ % 100 == 0) {
+            char temp[256];
+            snprintf(temp, sizeof(temp), "HookThread still waiting for umamusume.dll... (ticks: %d)", counter);
+            Log(temp);
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
     }
     OnGameInitialized();
 }
@@ -439,6 +452,15 @@ static void* local_get_assembly_image(const char* assembly_name) {
     static il2cpp_domain_get_t f_il2cpp_domain_get = (il2cpp_domain_get_t)local_resolve_symbol("il2cpp_domain_get");
     static il2cpp_domain_assembly_open_t f_il2cpp_domain_assembly_open = (il2cpp_domain_assembly_open_t)local_resolve_symbol("il2cpp_domain_assembly_open");
     static il2cpp_assembly_get_image_t f_il2cpp_assembly_get_image = (il2cpp_assembly_get_image_t)local_resolve_symbol("il2cpp_assembly_get_image");
+
+    static bool symbols_logged = false;
+    if (!symbols_logged) {
+        char temp[512];
+        snprintf(temp, sizeof(temp), "Local IL2CPP functions: domain_get=%p, assembly_open=%p, assembly_get_image=%p",
+                 f_il2cpp_domain_get, f_il2cpp_domain_assembly_open, f_il2cpp_assembly_get_image);
+        Log(temp);
+        symbols_logged = true;
+    }
 
     if (!f_il2cpp_domain_get || !f_il2cpp_domain_assembly_open || !f_il2cpp_assembly_get_image) return nullptr;
 
