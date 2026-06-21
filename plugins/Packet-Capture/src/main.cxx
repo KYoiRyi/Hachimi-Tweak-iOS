@@ -108,6 +108,11 @@ static std::deque<std::string> g_url_queue;
 static std::atomic<int> g_req_seq(0);
 
 static void Log(const std::string& msg) {
+#ifdef __APPLE__
+    NSLog(@"[Hachimi-PacketCapture] %s", msg.c_str());
+    fprintf(stderr, "[Hachimi-PacketCapture] %s\n", msg.c_str());
+    fflush(stderr);
+#endif
     if (!g_outputDir.empty()) {
         std::string logPath = g_outputDir + "/capture.log";
         std::ofstream ofs(logPath, std::ios::out | std::ios::app);
@@ -623,11 +628,22 @@ __attribute__((constructor)) static void ios_tweak_init() {
     if (g_standalone_initialized) return;
     g_standalone_initialized = true;
 
-    struct rebinding rebs[1];
-    rebs[0].name = "il2cpp_init";
-    rebs[0].replacement = (void*)h_il2cpp_init;
-    rebs[0].replaced = (void**)&o_il2cpp_init;
+    g_outputDir = GetPluginOutputDir("PacketCapture");
+    Log("=========================================");
+    Log("Hachimi Packet-Capture Tweak Dylib Constructor Loaded!");
+    Log("=========================================");
 
-    rebind_symbols(rebs, 1);
+    void* init_addr = dlsym(RTLD_DEFAULT, "il2cpp_init");
+    if (init_addr) {
+        struct rebinding rebs[1];
+        rebs[0].name = "il2cpp_init";
+        rebs[0].replacement = (void*)h_il2cpp_init;
+        rebs[0].replaced = (void**)&o_il2cpp_init;
+
+        rebind_symbols(rebs, 1);
+        Log("Hooked il2cpp_init via fishhook!");
+    } else {
+        Log("ERROR: il2cpp_init symbol not found in process!");
+    }
 }
 #endif
