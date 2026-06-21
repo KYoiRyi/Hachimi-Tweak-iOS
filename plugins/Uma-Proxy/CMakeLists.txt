@@ -1,6 +1,10 @@
 cmake_minimum_required(VERSION 3.11)
 project(Uma-ProxyPlugin LANGUAGES C CXX)
 
+if(APPLE)
+    enable_language(OBJCXX)
+endif()
+
 add_library(uma_proxy SHARED
     src/main.cxx
 )
@@ -12,7 +16,6 @@ if(ANDROID)
 endif()
 
 if(APPLE)
-    enable_language(OBJCXX)
     target_sources(uma_proxy PRIVATE src/fishhook.c)
     set_source_files_properties(src/main.cxx PROPERTIES LANGUAGE OBJCXX)
     target_link_libraries(uma_proxy PRIVATE "-framework Foundation")

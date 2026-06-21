@@ -1,6 +1,10 @@
 cmake_minimum_required(VERSION 3.11)
 project(PacketCapturePlugin LANGUAGES C CXX)
 
+if(APPLE)
+    enable_language(OBJCXX)
+endif()
+
 add_library(packet_capture SHARED
     src/main.cxx
 )
@@ -12,7 +16,6 @@ if(ANDROID)
 endif()
 
 if(APPLE)
-    enable_language(OBJCXX)
     target_sources(packet_capture PRIVATE src/fishhook.c)
     set_source_files_properties(src/main.cxx PROPERTIES LANGUAGE OBJCXX)
     target_link_libraries(packet_capture PRIVATE "-framework Foundation")
