@@ -732,6 +732,29 @@ static bool h_il2cpp_init(const char* domain_name) {
     return ret;
 }
 
+#ifdef __APPLE__
+#include <mach-o/dyld.h>
+static void LogFrameworkStatus() {
+    uint32_t count = _dyld_image_count();
+    bool found_unity = false;
+    bool found_game_assembly = false;
+    for (uint32_t i = 0; i < count; ++i) {
+        const char* name = _dyld_get_image_name(i);
+        if (name) {
+            std::string s_name(name);
+            if (s_name.find("UnityFramework") != std::string::npos) {
+                found_unity = true;
+            }
+            if (s_name.find("GameAssembly") != std::string::npos) {
+                found_game_assembly = true;
+            }
+        }
+    }
+    Log("Framework Status at load time: UnityFramework=" + std::to_string(found_unity) + 
+        ", GameAssembly=" + std::to_string(found_game_assembly));
+}
+#endif
+
 __attribute__((constructor)) static void ios_tweak_init() {
     if (g_standalone_initialized) return;
     g_standalone_initialized = true;
@@ -741,18 +764,18 @@ __attribute__((constructor)) static void ios_tweak_init() {
     Log("Hachimi Packet-Capture Tweak Dylib Constructor Loaded!");
     Log("=========================================");
     ShowStartupAlert();
+#ifdef __APPLE__
+    LogFrameworkStatus();
+#endif
 
-    void* init_addr = dlsym(RTLD_DEFAULT, "il2cpp_init");
-    if (init_addr) {
-        struct rebinding rebs[1];
-        rebs[0].name = "il2cpp_init";
-        rebs[0].replacement = (void*)h_il2cpp_init;
-        rebs[0].replaced = (void**)&o_il2cpp_init;
+    struct rebinding rebs[1];
+    rebs[0].name = "il2cpp_init";
+    rebs[0].replacement = (void*)h_il2cpp_init;
+    rebs[0].replaced = (void**)&o_il2cpp_init;
 
-        rebind_symbols(rebs, 1);
-        Log("Hooked il2cpp_init via fishhook!");
-    } else {
-        Log("ERROR: il2cpp_init symbol not found in process!");
-    }
+    int res = rebind_symbols(rebs, 1);
+    char temp[256];
+    snprintf(temp, sizeof(temp), "Registered il2cpp_init hook via fishhook. Result: %d", res);
+    Log(temp);
 }
 #endif
