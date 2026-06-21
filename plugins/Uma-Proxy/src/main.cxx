@@ -64,7 +64,8 @@ static std::string g_outputDir;
 // Configs
 static bool g_proxy_enabled = false;
 static std::string g_proxy_url = "http://127.0.0.1:5090";
-void Log(const std::string& msg) {
+
+static void Log(const std::string& msg) {
     if (!g_outputDir.empty()) {
         std::string logPath = g_outputDir + "/proxy.log";
         std::ofstream ofs(logPath, std::ios::out | std::ios::app);
@@ -75,11 +76,11 @@ void Log(const std::string& msg) {
     }
 }
 
-std::string GetPackageName() {
+static std::string GetPackageName() {
     return "jp.co.cygames.umamusume";
 }
 
-void EnsureDirectory(const std::string& path) {
+static void EnsureDirectory(const std::string& path) {
     std::string current = "";
     for (char c : path) {
         current += c;
@@ -94,11 +95,11 @@ void EnsureDirectory(const std::string& path) {
 #ifdef _WIN32
     _mkdir(path.c_str());
 #else
-    mkdir(current.c_str(), 0777);
+    mkdir(path.c_str(), 0777);
 #endif
 }
 
-std::string GetPluginOutputDir(const char* plugin_dir) {
+static std::string GetPluginOutputDir(const char* plugin_dir) {
 #ifdef _WIN32
     if (g_get_data_path) {
         const char* base = g_get_data_path();
@@ -119,7 +120,7 @@ std::string GetPluginOutputDir(const char* plugin_dir) {
 #endif
 }
 
-void ResolveStringFunctions() {
+static void ResolveStringFunctions() {
     if (!g_resolve_symbol) {
         Log("il2cpp_resolve_symbol API is unavailable.");
         return;
@@ -130,7 +131,7 @@ void ResolveStringFunctions() {
     g_string_length = (il2cpp_string_length_t)g_resolve_symbol("il2cpp_string_length");
 }
 
-void* ResolveNativeSymbol(const char* module_name, const char* symbol_name) {
+static void* ResolveNativeSymbol(const char* module_name, const char* symbol_name) {
 #if defined(__ANDROID__)
     void* handle = dlopen(module_name, RTLD_LAZY);
     return handle ? dlsym(handle, symbol_name) : nullptr;
@@ -151,7 +152,7 @@ void* ResolveNativeSymbol(const char* module_name, const char* symbol_name) {
 #endif
 }
 
-void LoadConfig() {
+static void LoadConfig() {
     std::string configPath = g_outputDir + "/config.json";
     std::ifstream ifs(configPath);
     if (ifs.is_open()) {
@@ -246,7 +247,7 @@ static void* h_Post(void* this_ptr, void* url_str, void* postData, void* headers
     return o_Post(this_ptr, url_str, postData, headers, method_info);
 }
 
-void OnGameInitialized() {
+static void OnGameInitialized() {
     Log("Game initialized, setting up proxy hooks...");
     
     LoadConfig();
@@ -317,7 +318,7 @@ void OnGameInitialized() {
     }
 }
 
-void HookThread() {
+static void HookThread() {
     while (true) {
         if (g_get_assembly_image) {
             void* image_uma = g_get_assembly_image("umamusume.dll");
@@ -355,8 +356,7 @@ HACHIMI_EXPORT bool hachimi_init_v3(HachimiGetApiFn get_api, int version) {
 }
 
 #ifdef __APPLE__
-// Declare Dobby API
-extern "C" int DobbyHook(void *function_address, void *replace_call, void **origin_call);
+#include <tinyhook.h>
 
 static void* local_resolve_symbol(const char* symbol_name) {
     return dlsym(RTLD_DEFAULT, symbol_name);
@@ -374,6 +374,7 @@ static void* local_get_assembly_image(const char* assembly_name) {
     if (!f_il2cpp_domain_get || !f_il2cpp_domain_assembly_open || !f_il2cpp_assembly_get_image) return nullptr;
 
     void* domain = f_il2cpp_domain_get();
+    if (!domain) return nullptr;
     void* assembly = f_il2cpp_domain_assembly_open(domain, assembly_name);
     if (!assembly) return nullptr;
     return f_il2cpp_assembly_get_image(assembly);
@@ -397,7 +398,7 @@ static void* local_get_method_addr(void* klass, const char* name, int argsCount)
 
 static void* local_interceptor_hook(void* interceptor, void* orig_addr, void* hook_addr) {
     void* orig = nullptr;
-    if (DobbyHook(orig_addr, hook_addr, &orig) == 0) {
+    if (tiny_hook(orig_addr, hook_addr, &orig) == 0) {
         return orig;
     }
     return nullptr;
@@ -418,9 +419,11 @@ static bool h_il2cpp_init(const char* domain_name) {
 
     Log("Standalone iOS Tweak Mode Initialized! Directory: " + g_outputDir);
 
+    bool ret = o_il2cpp_init(domain_name);
+
     std::thread(HookThread).detach();
 
-    return o_il2cpp_init(domain_name);
+    return ret;
 }
 
 __attribute__((constructor)) static void ios_tweak_init() {
@@ -429,7 +432,7 @@ __attribute__((constructor)) static void ios_tweak_init() {
 
     void* init_addr = dlsym(RTLD_DEFAULT, "il2cpp_init");
     if (init_addr) {
-        DobbyHook(init_addr, (void*)h_il2cpp_init, (void**)&o_il2cpp_init);
+        tiny_hook(init_addr, (void*)h_il2cpp_init, (void**)&o_il2cpp_init);
     }
 }
 #endif

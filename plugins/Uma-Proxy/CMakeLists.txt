@@ -14,18 +14,17 @@ endif()
 if(APPLE)
     include(FetchContent)
     FetchContent_Declare(
-      dobby
-      GIT_REPOSITORY https://github.com/jmpews/Dobby.git
-      GIT_TAG        master
+      tinyhook
+      GIT_REPOSITORY https://github.com/Antibioticss/tinyhook.git
+      GIT_TAG        main
     )
-    set(DOBBY_GENERATE_SHARED OFF CACHE BOOL "Build dobby static" FORCE)
-    FetchContent_MakeAvailable(dobby)
-    target_link_libraries(uma_proxy PRIVATE dobby_static)
+    FetchContent_MakeAvailable(tinyhook)
+    target_link_libraries(uma_proxy PRIVATE tinyhook_static)
 endif()
 
 if(MSVC)
     target_compile_options(uma_proxy PRIVATE /EHsc)
 else()
-    target_compile_options(uma_proxy PRIVATE -fexceptions)
+    target_compile_options(uma_proxy PRIVATE -fexceptions -fvisibility=hidden)
     set_property(TARGET uma_proxy APPEND_STRING PROPERTY LINK_FLAGS " -s")
 endif()
