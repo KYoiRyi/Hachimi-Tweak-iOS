@@ -1,6 +1,41 @@
 #if defined(__ANDROID__) || defined(__APPLE__)
 #include <dlfcn.h>
 #endif
+#ifdef __APPLE__
+#import <Foundation/Foundation.h>
+#include "fishhook.h"
+#include <map>
+#include <mutex>
+
+struct MethodHookInfo {
+    void* klass;
+    void* method_info;
+};
+
+static std::map<void*, MethodHookInfo> g_method_map;
+static std::mutex g_method_map_mutex;
+
+static std::map<void*, std::string> g_symbol_name_map;
+static std::mutex g_symbol_name_map_mutex;
+
+std::string GetiOSDocumentsDirectory() {
+    NSArray *paths = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES);
+    NSString *documentsDirectory = [paths firstObject];
+    if (documentsDirectory) {
+        return [documentsDirectory UTF8String];
+    }
+    return "";
+}
+
+static void* local_resolve_symbol(const char* symbol_name) {
+    void* sym = dlsym(RTLD_DEFAULT, symbol_name);
+    if (sym) {
+        std::lock_guard<std::mutex> lock(g_symbol_name_map_mutex);
+        g_symbol_name_map[sym] = symbol_name;
+    }
+    return sym;
+}
+#endif
 #ifdef _WIN32
 #include <direct.h>
 #include <windows.h>
@@ -109,6 +144,10 @@ static std::string GetPluginOutputDir(const char* plugin_dir) {
     }
     return std::string(".") + "/" + plugin_dir;
 #elif defined(__APPLE__)
+    std::string docs = GetiOSDocumentsDirectory();
+    if (!docs.empty()) {
+        return docs + "/hachimi/" + plugin_dir;
+    }
     char* home = getenv("HOME");
     std::string home_str = home ? home : "";
     if (home_str.empty()) {
@@ -139,11 +178,15 @@ static void* ResolveNativeSymbol(const char* module_name, const char* symbol_nam
     HMODULE module = GetModuleHandleA(module_name);
     return module ? (void*)GetProcAddress(module, symbol_name) : nullptr;
 #elif defined(__APPLE__)
-    void* sym = dlsym(RTLD_DEFAULT, symbol_name);
+    void* sym = local_resolve_symbol(symbol_name);
     if (sym) return sym;
     void* handle = dlopen(nullptr, RTLD_LAZY);
     sym = handle ? dlsym(handle, symbol_name) : nullptr;
     if (handle) dlclose(handle);
+    if (sym) {
+        std::lock_guard<std::mutex> lock(g_symbol_name_map_mutex);
+        g_symbol_name_map[sym] = symbol_name;
+    }
     return sym;
 #else
     (void)module_name;
@@ -369,12 +412,6 @@ HACHIMI_EXPORT bool hachimi_init_v3(HachimiGetApiFn get_api, int version) {
 }
 
 #ifdef __APPLE__
-#include <tinyhook.h>
-
-static void* local_resolve_symbol(const char* symbol_name) {
-    return dlsym(RTLD_DEFAULT, symbol_name);
-}
-
 static void* local_get_assembly_image(const char* assembly_name) {
     typedef void* (*il2cpp_domain_get_t)();
     typedef void* (*il2cpp_domain_assembly_open_t)(void* domain, const char* name);
@@ -415,14 +452,84 @@ static void* local_get_method_addr(void* klass, const char* name, int argsCount)
     if (!f_il2cpp_class_get_method_from_name) return nullptr;
     void* method = f_il2cpp_class_get_method_from_name(klass, name, argsCount);
     if (!method) return nullptr;
-    return *(void**)method;
+    
+    void* method_ptr = *(void**)method;
+    if (method_ptr) {
+        std::lock_guard<std::mutex> lock(g_method_map_mutex);
+        g_method_map[method_ptr] = { klass, method };
+    }
+    return method_ptr;
 }
 
 static void* local_interceptor_hook(void* interceptor, void* orig_addr, void* hook_addr) {
-    void* orig = nullptr;
-    if (tiny_hook(orig_addr, hook_addr, &orig) == 0) {
-        return orig;
+    if (!orig_addr || !hook_addr) return nullptr;
+
+    // 1. Check if it's a registered IL2CPP method
+    void* klass = nullptr;
+    void* method_info = nullptr;
+    {
+        std::lock_guard<std::mutex> lock(g_method_map_mutex);
+        auto it = g_method_map.find(orig_addr);
+        if (it != g_method_map.end()) {
+            klass = it->second.klass;
+            method_info = it->second.method_info;
+        }
     }
+
+    if (klass && method_info) {
+        // Force class initialization if possible to populate vtable
+        typedef void (*il2cpp_runtime_class_init_t)(void* klass);
+        static il2cpp_runtime_class_init_t f_il2cpp_runtime_class_init = (il2cpp_runtime_class_init_t)local_resolve_symbol("il2cpp_runtime_class_init");
+        if (f_il2cpp_runtime_class_init) {
+            f_il2cpp_runtime_class_init(klass);
+        }
+
+        // Patch MethodInfo pointer
+        void** methodPointer_ptr = (void**)method_info;
+        void** virtualMethodPointer_ptr = ((void**)method_info) + 1;
+        *methodPointer_ptr = hook_addr;
+        *virtualMethodPointer_ptr = hook_addr;
+
+        // Scan Class memory to patch matching VirtualInvokeData vtable entries
+        char* klass_bytes = (char*)klass;
+        int scan_start = 0x80;
+        int scan_end = 0x800; // scan up to 2048 bytes
+        int replaced_count = 0;
+        for (int offset = scan_start; offset <= scan_end - 16; offset += 8) {
+            void** ptr = (void**)(klass_bytes + offset);
+            if (*ptr == orig_addr && *(ptr + 1) == method_info) {
+                *ptr = hook_addr;
+                replaced_count++;
+            }
+        }
+        Log("Hijacked MethodInfo & VTable. VTable patched " + std::to_string(replaced_count) + " times.");
+        return orig_addr;
+    }
+
+    // 2. Check if it's a native C symbol resolved via ResolveNativeSymbol
+    std::string sym_name;
+    {
+        std::lock_guard<std::mutex> lock(g_symbol_name_map_mutex);
+        auto it = g_symbol_name_map.find(orig_addr);
+        if (it != g_symbol_name_map.end()) {
+            sym_name = it->second;
+        }
+    }
+
+    if (!sym_name.empty()) {
+        struct rebinding rebs[1];
+        rebs[0].name = sym_name.c_str();
+        rebs[0].replacement = hook_addr;
+        
+        void* orig_temp = nullptr;
+        rebs[0].replaced = &orig_temp;
+        
+        rebind_symbols(rebs, 1);
+        Log("Native C symbol hijacked via fishhook: " + sym_name + " [Original: " + std::to_string((uintptr_t)orig_temp) + "]");
+        return orig_temp;
+    }
+
+    Log("local_interceptor_hook: Failed to hijack target address (neither method nor symbol found).");
     return nullptr;
 }
 
@@ -439,7 +546,7 @@ static bool h_il2cpp_init(const char* domain_name) {
     g_outputDir = GetPluginOutputDir("UmaProxy");
     EnsureDirectory(g_outputDir);
 
-    Log("Standalone iOS Tweak Mode Initialized! Directory: " + g_outputDir);
+    Log("Standalone iOS Tweak Mode (JIT-less) Initialized! Directory: " + g_outputDir);
 
     bool ret = o_il2cpp_init(domain_name);
 
@@ -452,9 +559,11 @@ __attribute__((constructor)) static void ios_tweak_init() {
     if (g_standalone_initialized) return;
     g_standalone_initialized = true;
 
-    void* init_addr = dlsym(RTLD_DEFAULT, "il2cpp_init");
-    if (init_addr) {
-        tiny_hook(init_addr, (void*)h_il2cpp_init, (void**)&o_il2cpp_init);
-    }
+    struct rebinding rebs[1];
+    rebs[0].name = "il2cpp_init";
+    rebs[0].replacement = (void*)h_il2cpp_init;
+    rebs[0].replaced = (void**)&o_il2cpp_init;
+
+    rebind_symbols(rebs, 1);
 }
 #endif

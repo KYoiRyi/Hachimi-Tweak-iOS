@@ -12,14 +12,9 @@ if(ANDROID)
 endif()
 
 if(APPLE)
-    include(FetchContent)
-    FetchContent_Declare(
-      tinyhook
-      GIT_REPOSITORY https://github.com/Antibioticss/tinyhook.git
-      GIT_TAG        main
-    )
-    FetchContent_MakeAvailable(tinyhook)
-    target_link_libraries(packet_capture PRIVATE tinyhook_static)
+    target_sources(packet_capture PRIVATE src/fishhook.c)
+    set_source_files_properties(src/main.cxx PROPERTIES COMPILE_FLAGS "-x objective-c++")
+    target_link_libraries(packet_capture PRIVATE "-framework Foundation")
 endif()
 
 if(MSVC)
